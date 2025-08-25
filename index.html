@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Medidor de Cubiertas 3D (Cesium)</title>
+
+  <!-- Cesium -->
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Cesium.js"></script>
+
+  <style>
+    html,body { height:100%; margin:0; font-family:system-ui,Arial,Helvetica; }
+    .topbar { display:flex; gap:8px; align-items:end; padding:10px; background:#0f172a; color:white; }
+    .topbar input { padding:6px 8px; border-radius:6px; border:1px solid #cbd5e1; width:320px; }
+    .topbar button { padding:8px 12px; border-radius:6px; border:0; background:#2563eb; color:white; cursor:pointer; }
+    .stats { display:flex; gap:10px; padding:8px 12px; background:#f8fafc; }
+    .card { background:white; border:1px solid #e6edf3; padding:8px 12px; border-radius:8px; min-width:120px; }
+    #cesiumContainer { width:100%; height:calc(100vh - 132px); min-height:520px; display:block; }
+    .small { font-size:0.85rem; color:#374151; padding:6px 12px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div style="flex:1">
+      <label style="display:block;font-size:0.85rem;margin-bottom:4px;color:#e6eefc">Buscar dirección</label>
+      <input id="address" type="text" placeholder="Ej.: Calle Alcalá 1, Madrid" />
+    </div>
+    <div style="display:flex;gap:8px;">
+      <div style="display:flex;flex-direction:column;justify-content:flex-end">
+        <button id="searchBtn">Buscar</button>
+      </div>
+      <div style="display:flex;flex-direction:column;justify-content:flex-end">
+        <button id="clearBtn" style="background:#111827">Borrar</button>
+      </div>
+      <div style="display:flex;flex-direction:column;justify-content:flex-end">
+        <button id="exportBtn" style="background:#059669">Exportar GeoJSON</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="card"><div style="font-size:0.85rem;color:#374151;font-weight:600">Área 3D (m²)</div><div id="area3d" style="font-size:1.05rem">0</div></div>
+    <div class="card"><div style="font-size:0.85rem;color:#374151;font-weight:600">Perímetro (m)</div><div id="perimeter" style="font-size:1.05rem">0</div></div>
+    <div class="card"><div style="font-size:0.85rem;color:#374151;font-weight:600">Vértices</div><div id="vertices" style="font-size:1.05rem">0</div></div>
+  </div>
+
+  <div class="small">Consejo: rueda del ratón para acercar. Haz clic para añadir vértices sobre la cubierta y <b>doble clic</b> para cerrar el polígono.</div>
+
+  <div id="cesiumContainer"></div>
+
+<script>
+/* ---------- CONFIG: PON AQUÍ TU TOKEN CESIUM ION (si quieres usar Terrain/tiles 3D) ---------- */
+Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI3MTg4NDI3Yi02YmVlLTRhZTctYjFmMC0yYWVjZmJlZTY2ZjQiLCJpZCI6MzM1MTQxLCJpYXQiOjE3NTYxMjA4NTR9.dQf9c0cIVw7h18Lv-FEA0x4Id2WgJCjZd4BYi_0144w";
+
+/* ---------- Inicialización del viewer ---------- */
+const viewer = new Cesium.Viewer('cesiumContainer', {
+  timeline: false,
+  animation: false,
+  baseLayerPicker: true,
+  geocoder: false,
+  homeButton: true,
+  scene3DOnly: true,
+  terrainProvider: Cesium.createWorldTerrain()
+});
+viewer.scene.globe.depthTestAgainstTerrain = true;
+viewer.scene.primitives.add(Cesium.createOsmBuildings());
+viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(-3.7038,40.4168,1200000) });
+
+/* ---------- Geocoding simple con Nominatim ---------- */
+async function geocode(q){
+  if(!q) return null;
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('q', q);
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('limit', '1');
+  try {
+    const res = await fetch(url.toString(), { headers: { 'Accept-Language':'es' } });
+    if(!res.ok) throw new Error('Geocoder failed');
+    const data = await res.json();
+    return data[0] || null;
+  } catch(e){
+    console.warn('Geocode error', e);
+    return null;
+  }
+}
+document.getElementById('searchBtn').onclick = async () => {
+  const q = document.getElementById('address').value.trim();
+  if(!q) return;
+  const r = await geocode(q);
+  if(!r) { alert('No encontrado'); return; }
+  const lon = parseFloat(r.lon), lat = parseFloat(r.lat);
+  viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 400), duration: 1.2 });
+};
+
+/* ---------- Dibujo: clic para añadir, doble clic para cerrar ---------- */
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+const positions = [];
+let polygonEntity = null;
+let sketchEntity = null;
+
+function updateSketch(){
+  // eliminar anterior
+  if(sketchEntity) viewer.entities.remove(sketchEntity);
+  if(polygonEntity) viewer.entities.remove(polygonEntity);
+
+  // polilínea de borrador
+  if(positions.length >= 1){
+    sketchEntity = viewer.entities.add({
+      polyline: { positions: positions.slice(), width:3, material: Cesium.Color.YELLOW }
+    });
+  }
+
+  // polígono provisional
+  if(positions.length >= 3){
+    polygonEntity = viewer.entities.add({
+      polygon: {
+        hierarchy: new Cesium.PolygonHierarchy(positions.slice()),
+        material: Cesium.Color.RED.withAlpha(0.35),
+        outline: true,
+        outlineColor: Cesium.Color.RED
+      }
+    });
+  }
+}
+
+function pickPositionFallback(screenPosition){
+  // Primero intentamos pickPosition (necesita terrain/tiles). Si no retorna, caemos a pickEllipsoid.
+  let pos = viewer.scene.pickPosition(screenPosition);
+  if(pos) return pos;
+  // si pickPosition falla (p.e. fuera de terreno o token no válido), usamos la elipsoide
+  pos = viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
+  return pos;
+}
+
+handler.setInputAction((click) => {
+  const cart = pickPositionFallback(click.position);
+  if(!cart) return;
+  positions.push(cart);
+  updateSketch();
+  document.getElementById('vertices').textContent = String(positions.length);
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+handler.setInputAction(() => {
+  if(positions.length < 3) { alert('Marca al menos 3 puntos'); return; }
+  // cerrar polígono: calcular y mostrar medidas
+  computeAndShowMeasurements(positions);
+}, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+document.getElementById('clearBtn').onclick = () => {
+  positions.length = 0;
+  if(sketchEntity) viewer.entities.remove(sketchEntity);
+  if(polygonEntity) viewer.entities.remove(polygonEntity);
+  sketchEntity = polygonEntity = null;
+  document.getElementById('area3d').textContent = "0";
+  document.getElementById('perimeter').textContent = "0";
+  document.getElementById('vertices').textContent = "0";
+};
+
+/* ---------- Cálculo de área en el plano de la cubierta (m²) ---------- */
+function vecSub(a,b){
+  return new Cesium.Cartesian3(a.x-b.x, a.y-b.y, a.z-b.z);
+}
+function vecCross(a,b){
+  return Cesium.Cartesian3.cross(a,b, new Cesium.Cartesian3());
+}
+function vecDot(a,b){ return Cesium.Cartesian3.dot(a,b); }
+function vecNormalize(a){ return Cesium.Cartesian3.normalize(a, new Cesium.Cartesian3()); }
+function lengthVec(a){ return Cesium.Cartesian3.magnitude(a); }
+
+function computePlaneBasis(points){
+  // busca 3 puntos no colineales para definir el plano
+  const p0 = points[0];
+  let i1 = 1, i2 = 2;
+  while(i2 < points.length){
+    const v1 = vecSub(points[i1], p0);
+    const v2 = vecSub(points[i2], p0);
+    const n = vecCross(v1, v2);
+    if(lengthVec(n) > 1e-6){
+      const normal = vecNormalize(n);
+      // u = v1 proyectado sobre el plano
+      const v1DotN = vecDot(v1, normal);
+      const v1proj = new Cesium.Cartesian3(
+        v1.x - normal.x * v1DotN,
+        v1.y - normal.y * v1DotN,
+        v1.z - normal.z * v1DotN
+      );
+      const u = vecNormalize(v1proj);
+      const v = vecNormalize(vecCross(normal, u));
+      return { origin: p0, u, v, n: normal };
+    }
+    i2++;
+  }
+  throw new Error('Puntos colineales o insuficientes');
+}
+
+function projectToPlane(p, basis){
+  const d = vecSub(p, basis.origin);
+  return { x: vecDot(d, basis.u), y: vecDot(d, basis.v) };
+}
+function polygonArea2D(coords){
+  let area = 0;
+  for(let i=0,j=coords.length-1;i<coords.length;j=i++){
+    area += (coords[j].x * coords[i].y - coords[i].x * coords[j].y);
+  }
+  return Math.abs(area) * 0.5;
+}
+function distance3D(a,b){
+  return CecDist(a,b);
+}
+function CecDist(a,b){ return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2); }
+
+/* cálculo final */
+function computeAndShowMeasurements(cartesians){
+  try {
+    const basis = computePlaneBasis(cartesians);
+    const flat = cartesians.map(p => projectToPlane(p, basis));
+    const area = polygonArea2D(flat); // en m² (Cartesian3 usa metros)
+    let perim = 0;
+    for(let i=0;i<cartesians.length;i++){
+      const a = cartesians[i], b = cartesians[(i+1)%cartesians.length];
+      perim += CecDist(a,b);
+    }
+    document.getElementById('area3d').textContent = area.toFixed(2);
+    document.getElementById('perimeter').textContent = perim.toFixed(2);
+    document.getElementById('vertices').textContent = String(cartesians.length);
+    // mantener polígono dibujado
+    updateSketch();
+  } catch(e){
+    console.warn('Error al calcular área:', e);
+    alert('No se pudo calcular el área. Asegúrate de marcar al menos 3 puntos no alineados.');
+  }
+}
+
+/* ---------- Exportar GeoJSON ---------- */
+document.getElementById('exportBtn').onclick = () => {
+  if(positions.length < 3){ alert('Nada que exportar'); return; }
+  const carto = positions.map(c => Cesium.Cartographic.fromCartesian(c));
+  const coords = carto.map(c => [Cesium.Math.toDegrees(c.longitude), Cesium.Math.toDegrees(c.latitude), c.height || 0]);
+  coords.push(coords[0]);
+  const geo = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coords] } };
+  const blob = new Blob([JSON.stringify(geo)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'roof.geojson';
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+/* ---------- Mensajes de depuración en consola para ayudarte si algo falla ---------- */
+console.log('Cesium viewer iniciado. Si el mapa aparece en blanco al embeder en Sites, prueba a abrir este archivo directamente en una pestaña nueva (URL pública).');
+</script>
+</body>
+</html>
