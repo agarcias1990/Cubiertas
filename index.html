@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Test Cesium</title>
+  <title>Test Cesium simple</title>
   <link href="https://unpkg.com/cesium@1.121.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
   <script src="https://unpkg.com/cesium@1.121.0/Build/Cesium/Cesium.js"></script>
   <style>
@@ -11,20 +11,13 @@
 </head>
 <body>
   <div id="cesiumContainer"></div>
-
 <script>
-Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI3MTg4NDI3Yi02YmVlLTRhZTctYjFmMC0yYWVjZmJlZTY2ZjQiLCJpZCI6MzM1MTQxLCJpYXQiOjE3NTYxMjA4NTR9.dQf9c0cIVw7h18Lv-FEA0x4Id2WgJCjZd4BYi_0144w";
-
 const viewer = new Cesium.Viewer("cesiumContainer", {
-  terrainProvider: Cesium.createWorldTerrain(),
   animation: false,
   timeline: false
 });
 
-viewer.scene.primitives.add(Cesium.createOsmBuildings());
-viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(-3.7038, 40.4168, 1500000) });
-
-console.log("✅ Cesium cargado");
+console.log("✅ Viewer inicializado");
 </script>
 </body>
 </html>
