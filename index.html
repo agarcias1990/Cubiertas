@@ -2,22 +2,147 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Test Cesium simple</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voltira - Medidor de Cubiertas 3D</title>
+
   <link href="https://unpkg.com/cesium@1.121.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
   <script src="https://unpkg.com/cesium@1.121.0/Build/Cesium/Cesium.js"></script>
+
   <style>
-    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; }
+    html,body { height:100%; margin:0; font-family:system-ui,Arial,Helvetica; }
+    .topbar { display:flex; gap:8px; align-items:end; padding:10px; background:#0f172a; color:white; }
+    .topbar button { padding:8px 12px; border-radius:6px; border:0; background:#2563eb; color:white; cursor:pointer; }
+    .stats { display:flex; gap:10px; padding:8px 12px; background:#f8fafc; }
+    .card { background:white; border:1px solid #e6edf3; padding:8px 12px; border-radius:8px; min-width:120px; }
+    #cesiumContainer { width:100%; height:calc(100vh - 132px); min-height:520px; display:block; }
   </style>
 </head>
 <body>
-  <div id="cesiumContainer"></div>
-<script>
-const viewer = new Cesium.Viewer("cesiumContainer", {
-  animation: false,
-  timeline: false
-});
+  <div class="topbar">
+    <div style="display:flex;gap:8px;">
+      <button id="clearBtn" style="background:#111827">Borrar</button>
+      <button id="exportBtn" style="background:#059669">Exportar GeoJSON</button>
+    </div>
+  </div>
 
-console.log("✅ Viewer inicializado");
+  <div class="stats">
+    <div class="card"><div>Área (m²)</div><div id="area3d">0</div></div>
+    <div class="card"><div>Perímetro (m)</div><div id="perimeter">0</div></div>
+    <div class="card"><div>Vértices</div><div id="vertices">0</div></div>
+  </div>
+
+  <div id="cesiumContainer"></div>
+
+<script>
+Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI5MjMwODkwMy02OTQ5LTRiODYtOTcwNS1lZjJjY2FmNWJlMTgiLCJpZCI6MzM1MTQxLCJpYXQiOjE3NTYxOTM1MjZ9.VMsG6v89HMwz2VUXb99FDdcuByyd4XT0B92OQO_N7-w";
+
+/* ---------- Viewer con geocoder nativo ---------- */
+const viewer = new Cesium.Viewer('cesiumContainer', {
+  terrainProvider: Cesium.createWorldTerrain(),
+  animation: false,
+  timeline: false,
+  geocoder: true
+});
+viewer.scene.primitives.add(Cesium.createOsmBuildings());
+viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(-3.7038,40.4168,1200000) });
+
+/* ---------- Dibujo de polígono ---------- */
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+const positions = [];
+let sketchEntity = null, polygonEntity = null;
+
+function updateSketch(){
+  if(sketchEntity) viewer.entities.remove(sketchEntity);
+  if(polygonEntity) viewer.entities.remove(polygonEntity);
+  if(positions.length >= 1){
+    sketchEntity = viewer.entities.add({ polyline:{ positions: positions.slice(), width:3, material: Cesium.Color.YELLOW } });
+  }
+  if(positions.length >= 3){
+    polygonEntity = viewer.entities.add({
+      polygon: {
+        hierarchy: new Cesium.PolygonHierarchy(positions.slice()),
+        material: Cesium.Color.RED.withAlpha(0.35),
+        outline: true,
+        outlineColor: Cesium.Color.RED
+      }
+    });
+  }
+}
+
+function pickPos(screenPos){
+  let c = viewer.scene.pickPosition(screenPos);
+  if(c) return c;
+  return viewer.camera.pickEllipsoid(screenPos, viewer.scene.globe.ellipsoid);
+}
+
+handler.setInputAction((click) => {
+  const cart = pickPos(click.position);
+  if(!cart) return;
+  positions.push(cart);
+  updateSketch();
+  document.getElementById('vertices').textContent = positions.length;
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+handler.setInputAction(() => {
+  if(positions.length < 3){ alert('Marca al menos 3 puntos'); return; }
+  computeMeasurements(positions);
+}, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+document.getElementById('clearBtn').onclick = () => {
+  positions.length = 0;
+  if(sketchEntity) viewer.entities.remove(sketchEntity);
+  if(polygonEntity) viewer.entities.remove(polygonEntity);
+  sketchEntity = polygonEntity = null;
+  document.getElementById('area3d').textContent = "0";
+  document.getElementById('perimeter').textContent = "0";
+  document.getElementById('vertices').textContent = "0";
+};
+
+/* ---------- Cálculo área / perímetro ---------- */
+function vecSub(a,b){ return new Cesium.Cartesian3(a.x-b.x,a.y-b.y,a.z-b.z); }
+function vecCross(a,b){ return Cesium.Cartesian3.cross(a,b,new Cesium.Cartesian3()); }
+function vecDot(a,b){ return Cesium.Cartesian3.dot(a,b); }
+function lengthVec(a){ return Cesium.Cartesian3.magnitude(a); }
+function computeBasis(points){
+  const p0 = points[0];
+  for(let i1=1;i1<points.length-1;i1++){
+    const v1 = vecSub(points[i1],p0);
+    const v2 = vecSub(points[i1+1],p0);
+    const n = vecCross(v1,v2);
+    if(lengthVec(n)>1e-6){
+      const normal = Cesium.Cartesian3.normalize(n,new Cesium.Cartesian3());
+      const u = Cesium.Cartesian3.normalize(v1,new Cesium.Cartesian3());
+      const v = Cesium.Cartesian3.normalize(vecCross(normal,u,new Cesium.Cartesian3()),new Cesium.Cartesian3());
+      return {origin:p0,u,v};
+    }
+  }
+}
+function project(p,basis){ const d=vecSub(p,basis.origin); return {x:vecDot(d,basis.u), y:vecDot(d,basis.v)}; }
+function polyArea(coords){ let a=0; for(let i=0,j=coords.length-1;i<coords.length;j=i++){ a += (coords[j].x*coords[i].y - coords[i].x*coords[j].y); } return Math.abs(a)/2; }
+function distance(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2+(a.z-b.z)**2); }
+function computeMeasurements(pts){
+  const basis = computeBasis(pts);
+  const flat = pts.map(p=>project(p,basis));
+  const area = polyArea(flat);
+  let perim=0;
+  for(let i=0;i<pts.length;i++){ perim += distance(pts[i], pts[(i+1)%pts.length]); }
+  document.getElementById('area3d').textContent = area.toFixed(2);
+  document.getElementById('perimeter').textContent = perim.toFixed(2);
+}
+
+/* ---------- Exportar GeoJSON ---------- */
+document.getElementById('exportBtn').onclick = () => {
+  if(positions.length<3){ alert('Nada que exportar'); return; }
+  const coords = positions.map(c=>{
+    const cg=Cesium.Cartographic.fromCartesian(c);
+    return [Cesium.Math.toDegrees(cg.longitude), Cesium.Math.toDegrees(cg.latitude), cg.height||0];
+  });
+  coords.push(coords[0]);
+  const geo = {type:'Feature',properties:{},geometry:{type:'Polygon',coordinates:[coords]}};
+  const blob=new Blob([JSON.stringify(geo)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='roof.geojson'; a.click(); URL.revokeObjectURL(url);
+};
 </script>
 </body>
 </html>
