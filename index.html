@@ -50,7 +50,7 @@
   <div id="cesiumContainer"></div>
 
 <script>
-/* ---------- CONFIG: PON AQUÍ TU TOKEN CESIUM ION (si quieres usar Terrain/tiles 3D) ---------- */
+/* ---------- CESIUM ION TOKEN ---------- */
 Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI3MTg4NDI3Yi02YmVlLTRhZTctYjFmMC0yYWVjZmJlZTY2ZjQiLCJpZCI6MzM1MTQxLCJpYXQiOjE3NTYxMjA4NTR9.dQf9c0cIVw7h18Lv-FEA0x4Id2WgJCjZd4BYi_0144w";
 
 /* ---------- Inicialización del viewer ---------- */
@@ -93,46 +93,30 @@ document.getElementById('searchBtn').onclick = async () => {
   viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 400), duration: 1.2 });
 };
 
-/* ---------- Dibujo: clic para añadir, doble clic para cerrar ---------- */
+/* ---------- Dibujo de polígono ---------- */
 const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
 const positions = [];
 let polygonEntity = null;
 let sketchEntity = null;
 
 function updateSketch(){
-  // eliminar anterior
   if(sketchEntity) viewer.entities.remove(sketchEntity);
   if(polygonEntity) viewer.entities.remove(polygonEntity);
-
-  // polilínea de borrador
   if(positions.length >= 1){
-    sketchEntity = viewer.entities.add({
-      polyline: { positions: positions.slice(), width:3, material: Cesium.Color.YELLOW }
-    });
+    sketchEntity = viewer.entities.add({ polyline: { positions: positions.slice(), width:3, material: Cesium.Color.YELLOW } });
   }
-
-  // polígono provisional
   if(positions.length >= 3){
     polygonEntity = viewer.entities.add({
-      polygon: {
-        hierarchy: new Cesium.PolygonHierarchy(positions.slice()),
-        material: Cesium.Color.RED.withAlpha(0.35),
-        outline: true,
-        outlineColor: Cesium.Color.RED
-      }
+      polygon: { hierarchy: new Cesium.PolygonHierarchy(positions.slice()), material: Cesium.Color.RED.withAlpha(0.35), outline: true, outlineColor: Cesium.Color.RED }
     });
   }
 }
-
 function pickPositionFallback(screenPosition){
-  // Primero intentamos pickPosition (necesita terrain/tiles). Si no retorna, caemos a pickEllipsoid.
   let pos = viewer.scene.pickPosition(screenPosition);
   if(pos) return pos;
-  // si pickPosition falla (p.e. fuera de terreno o token no válido), usamos la elipsoide
   pos = viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
   return pos;
 }
-
 handler.setInputAction((click) => {
   const cart = pickPositionFallback(click.position);
   if(!cart) return;
@@ -143,7 +127,6 @@ handler.setInputAction((click) => {
 
 handler.setInputAction(() => {
   if(positions.length < 3) { alert('Marca al menos 3 puntos'); return; }
-  // cerrar polígono: calcular y mostrar medidas
   computeAndShowMeasurements(positions);
 }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
 
@@ -157,99 +140,66 @@ document.getElementById('clearBtn').onclick = () => {
   document.getElementById('vertices').textContent = "0";
 };
 
-/* ---------- Cálculo de área en el plano de la cubierta (m²) ---------- */
-function vecSub(a,b){
-  return new Cesium.Cartesian3(a.x-b.x, a.y-b.y, a.z-b.z);
-}
-function vecCross(a,b){
-  return Cesium.Cartesian3.cross(a,b, new Cesium.Cartesian3());
-}
+/* ---------- Cálculo de área y perímetro ---------- */
+function vecSub(a,b){ return new Cesium.Cartesian3(a.x-b.x, a.y-b.y, a.z-b.z); }
+function vecCross(a,b){ return Cesium.Cartesian3.cross(a,b,new Cesium.Cartesian3()); }
 function vecDot(a,b){ return Cesium.Cartesian3.dot(a,b); }
-function vecNormalize(a){ return Cesium.Cartesian3.normalize(a, new Cesium.Cartesian3()); }
+function vecNormalize(a){ return Cesium.Cartesian3.normalize(a,new Cesium.Cartesian3()); }
 function lengthVec(a){ return Cesium.Cartesian3.magnitude(a); }
-
 function computePlaneBasis(points){
-  // busca 3 puntos no colineales para definir el plano
-  const p0 = points[0];
-  let i1 = 1, i2 = 2;
+  const p0 = points[0]; let i1 = 1, i2 = 2;
   while(i2 < points.length){
-    const v1 = vecSub(points[i1], p0);
-    const v2 = vecSub(points[i2], p0);
+    const v1 = vecSub(points[i1], p0); const v2 = vecSub(points[i2], p0);
     const n = vecCross(v1, v2);
     if(lengthVec(n) > 1e-6){
       const normal = vecNormalize(n);
-      // u = v1 proyectado sobre el plano
       const v1DotN = vecDot(v1, normal);
-      const v1proj = new Cesium.Cartesian3(
-        v1.x - normal.x * v1DotN,
-        v1.y - normal.y * v1DotN,
-        v1.z - normal.z * v1DotN
-      );
+      const v1proj = new Cesium.Cartesian3(v1.x - normal.x*v1DotN, v1.y - normal.y*v1DotN, v1.z - normal.z*v1DotN);
       const u = vecNormalize(v1proj);
       const v = vecNormalize(vecCross(normal, u));
-      return { origin: p0, u, v, n: normal };
+      return { origin:p0, u, v, n:normal };
     }
     i2++;
   }
   throw new Error('Puntos colineales o insuficientes');
 }
-
 function projectToPlane(p, basis){
   const d = vecSub(p, basis.origin);
-  return { x: vecDot(d, basis.u), y: vecDot(d, basis.v) };
+  return { x: vecDot(d,basis.u), y: vecDot(d,basis.v) };
 }
 function polygonArea2D(coords){
   let area = 0;
   for(let i=0,j=coords.length-1;i<coords.length;j=i++){
-    area += (coords[j].x * coords[i].y - coords[i].x * coords[j].y);
+    area += (coords[j].x*coords[i].y - coords[i].x*coords[j].y);
   }
-  return Math.abs(area) * 0.5;
+  return Math.abs(area)*0.5;
 }
-function distance3D(a,b){
-  return CecDist(a,b);
-}
-function CecDist(a,b){ return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2); }
-
-/* cálculo final */
+function CecDist(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2+(a.z-b.z)**2); }
 function computeAndShowMeasurements(cartesians){
   try {
     const basis = computePlaneBasis(cartesians);
-    const flat = cartesians.map(p => projectToPlane(p, basis));
-    const area = polygonArea2D(flat); // en m² (Cartesian3 usa metros)
-    let perim = 0;
-    for(let i=0;i<cartesians.length;i++){
-      const a = cartesians[i], b = cartesians[(i+1)%cartesians.length];
-      perim += CecDist(a,b);
-    }
+    const flat = cartesians.map(p=>projectToPlane(p,basis));
+    const area = polygonArea2D(flat);
+    let perim=0; for(let i=0;i<cartesians.length;i++){ perim+=CecDist(cartesians[i],cartesians[(i+1)%cartesians.length]); }
     document.getElementById('area3d').textContent = area.toFixed(2);
     document.getElementById('perimeter').textContent = perim.toFixed(2);
     document.getElementById('vertices').textContent = String(cartesians.length);
-    // mantener polígono dibujado
     updateSketch();
-  } catch(e){
-    console.warn('Error al calcular área:', e);
-    alert('No se pudo calcular el área. Asegúrate de marcar al menos 3 puntos no alineados.');
-  }
+  } catch(e){ alert('Error: marca al menos 3 puntos no alineados'); }
 }
 
 /* ---------- Exportar GeoJSON ---------- */
 document.getElementById('exportBtn').onclick = () => {
   if(positions.length < 3){ alert('Nada que exportar'); return; }
-  const carto = positions.map(c => Cesium.Cartographic.fromCartesian(c));
-  const coords = carto.map(c => [Cesium.Math.toDegrees(c.longitude), Cesium.Math.toDegrees(c.latitude), c.height || 0]);
+  const carto = positions.map(c=>Cesium.Cartographic.fromCartesian(c));
+  const coords = carto.map(c=>[Cesium.Math.toDegrees(c.longitude),Cesium.Math.toDegrees(c.latitude),c.height||0]);
   coords.push(coords[0]);
-  const geo = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coords] } };
-  const blob = new Blob([JSON.stringify(geo)], { type: 'application/json' });
+  const geo = { type:'Feature', properties:{}, geometry:{ type:'Polygon', coordinates:[coords] } };
+  const blob = new Blob([JSON.stringify(geo)], { type:'application/json' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'roof.geojson';
-  a.click();
-  URL.revokeObjectURL(url);
+  const a = document.createElement('a'); a.href=url; a.download='roof.geojson'; a.click(); URL.revokeObjectURL(url);
 };
-
-/* ---------- Mensajes de depuración en consola para ayudarte si algo falla ---------- */
-console.log('Cesium viewer iniciado. Si el mapa aparece en blanco al embeder en Sites, prueba a abrir este archivo directamente en una pestaña nueva (URL pública).');
 </script>
 </body>
 </html>
+
